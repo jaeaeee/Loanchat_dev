@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 _CALC_KEYWORDS = {
     "얼마",
     "한도",
-    "가능",
     "계산",
     "원리금",
     "상환",
@@ -54,10 +53,14 @@ INFO_PATTERNS = [
     r"(방법|어떻게|절차|순서|흐름|하는\s*법|가이드)",
     r"(설명|알려\s*줘|알고\s*싶|궁금)",
     r"(요건|조건|자격|필요|필수|서류|준비물)",
-    r"(후순위|2\s*순위|담보\s*순위|영향|중복|신청)",
+    r"(발급|제출|온라인|비대면|대체|대리|위임)",
+    r"(예외|확인|증빙|증명|서류명|구비\s*서류)",
+    r"(후순위|2\s*순위|담보\s*순위|영향|중복\s*신청)",
 ]
 INFO_REGEX = re.compile("|".join(INFO_PATTERNS), re.IGNORECASE)
-_IMPACT_QUESTION_PATTERN = re.compile(r"영향\s*이\s*있(나요|을까요|어\?)\s*$", re.IGNORECASE)
+_IMPACT_QUESTION_PATTERN = re.compile(
+    r"영향\s*이\s*있(나요|을까요|어\?)\s*$", re.IGNORECASE
+)
 _CALC_SLOT_KEYS = {
     "loan_amount",
     "principal",
@@ -77,6 +80,17 @@ _CALC_SLOT_KEYS = {
     "collateral_value",
     "property_value",
 }
+CALC_INTENT_PATTERNS = [
+    r"계산\s*해줘|계산해\s*줘|계산\s*해|계산해주세요",
+    r"얼마\s*(가능|받을\s*수|나올까|될까|나오나요)",
+    r"한도\s*(알려줘|계산|조회|확인)",
+    r"ltv\s*계산|dti\s*계산|dsr\s*계산",
+]
+CALC_INTENT_REGEX = re.compile("|".join(CALC_INTENT_PATTERNS), re.IGNORECASE)
+INFO_EXCEPTIONS = re.compile(
+    r"기준|조건|정의|의미|이란|절차|방법|서류|발급|제출|온라인|대체|예외|영향|중복\s*신청|확인|증빙",
+    re.IGNORECASE,
+)
 
 _INCOME_KEYWORDS = ("연소득", "연 봉", "연봉", "연간소득", "소득")
 _DEBT_KEYWORDS = ("부채", "상환")
@@ -229,6 +243,9 @@ def _rule_based_analysis(message: str) -> RuleAnalysis:
     has_number = bool(re.search(r"\d", message))
 
     calc_hits = sum(1 for kw in _CALC_KEYWORDS if kw in lowered)
+    calc_intent = CALC_INTENT_REGEX.search(message) is not None
+    if calc_intent:
+        calc_hits += 2
     info_hits = sum(1 for _ in INFO_REGEX.finditer(message))
     question_hits = sum(1 for kw in _QUESTION_TOKENS if kw in lowered or kw in tokens)
     has_strong_calc_keyword = any(kw in lowered for kw in _STRONG_CALC_KEYWORDS)
@@ -238,18 +255,23 @@ def _rule_based_analysis(message: str) -> RuleAnalysis:
     has_calc_slots = any(key in slots for key in _CALC_SLOT_KEYS)
     info_regex_hit = info_hits > 0
     impact_question = _IMPACT_QUESTION_PATTERN.search(message) is not None
+    info_exception = INFO_EXCEPTIONS.search(message) is not None
 
     info_priority = False
     if info_regex_hit and not has_calc_slots:
         info_priority = True
     if impact_question:
         info_priority = True
+    if info_exception:
+        info_priority = True
     if info_priority and info_hits == 0:
         info_hits = 1
 
     calc_condition = False
     if not info_priority:
-        if calc_hits and has_number:
+        if calc_intent and not info_exception:
+            calc_condition = True
+        elif calc_hits and has_number:
             calc_condition = True
         elif calc_hits > info_hits:
             if has_number or has_strong_calc_keyword or calc_hits >= 2:

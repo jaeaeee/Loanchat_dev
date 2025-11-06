@@ -87,3 +87,13 @@ def test_informational_without_numeric_slots_but_calc_keywords() -> None:
 def test_informational_impact_question_even_with_calc_keywords() -> None:
     analysis = extract_intent_and_slots("금리 인상이 DSR에 영향이 있나요?")
     assert analysis.get("intent") == "info"
+
+
+def test_calculational_intent_patterns_trigger() -> None:
+    analysis = extract_intent_and_slots("대출 한도 계산해줘")
+    assert analysis.get("intent") == "calc"
+
+
+def test_info_exception_overrides_calc_request() -> None:
+    analysis = extract_intent_and_slots("LTV 기준이 뭔지 알려줘")
+    assert analysis.get("intent") == "info"
