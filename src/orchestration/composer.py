@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, Any, Dict, List
+import re
 
 from jinja2 import Template
 
@@ -44,7 +45,6 @@ _FALLBACK = """\
 가정: {{ calc.assumptions | join(", ") }}
 {% endif %}
 {% else -%}
-정보 요약
 {{ summary }}
 {% if confidence %}
 {% set passed = confidence.get("passed") if confidence is mapping else None %}
@@ -191,10 +191,103 @@ def _build_info_context(state: OrchestrationState) -> dict[str, Any]:
     }
 
 
+_INFO_SECTION_PATTERN = re.compile(r"\s*-\s*\*\*(.+?)\*\*:\s*", re.MULTILINE)
+
+
+def _format_section_body(body: str | None) -> str:
+    text = (body or "").strip()
+    if not text:
+        return ""
+
+    text = text.replace("\r\n", "\n").replace("•", "• ")
+    placeholder = "\u2027"
+    text = re.sub(r"(\d),(?=\d)", lambda m: f"{m.group(1)}{placeholder}", text)
+
+    raw_segments: list[str] = []
+    for block in re.split(r"\n+", text):
+        block = block.strip()
+        if not block:
+            continue
+        parts = re.split(r"\s*[-•]\s*", block)
+        if len(parts) > 1:
+            raw_segments.extend(p.strip() for p in parts if p.strip())
+        else:
+            raw_segments.append(block)
+
+    if not raw_segments:
+        raw_segments = [text]
+
+    lines: list[str] = []
+    for segment in raw_segments:
+        if not segment:
+            continue
+        segment_safe = segment
+        if ":" in segment_safe:
+            title, rest = segment_safe.split(":", 1)
+            title = title.strip().replace(placeholder, ",")
+            rest_items_raw = [item.strip() for item in re.split(r",\s*", rest) if item.strip()]
+            rest_items = [item.replace(placeholder, ",") for item in rest_items_raw]
+            lines.append(f"- {title}")
+            for item in rest_items:
+                lines.append(f"  - {item}")
+        else:
+            pieces_raw = [item.strip() for item in re.split(r",\s*", segment_safe) if item.strip()]
+            pieces = [item.replace(placeholder, ",") for item in pieces_raw]
+            if len(pieces) > 1:
+                base_candidate = pieces[0]
+                match = re.search(r"^(.*?)(?=\b[\w·]+\s*\d)", base_candidate)
+                if match and match.group(1).strip():
+                    base_line = match.group(1).strip()
+                    remainder = base_candidate[match.end():].strip()
+                    sub_items = []
+                    if remainder:
+                        sub_items.append(remainder)
+                    sub_items.extend(pieces[1:])
+                    lines.append(f"- {base_line}")
+                    for item in sub_items:
+                        lines.append(f"  - {item}")
+                else:
+                    lines.append(f"- {base_candidate}")
+                    for item in pieces[1:]:
+                        lines.append(f"  - {item}")
+            else:
+                lines.append(f"- {segment}")
+
+    return "\n".join(lines)
+
+
+def _format_informational_summary(summary: str | None) -> str:
+    if not summary:
+        return ""
+    text = str(summary).strip()
+    matches = list(_INFO_SECTION_PATTERN.finditer(text))
+    if not matches:
+        return text
+
+    sections: list[str] = []
+    intro = text[: matches[0].start()].strip()
+    if intro:
+        sections.append(intro)
+
+    for idx, match in enumerate(matches):
+        title = match.group(1).strip()
+        next_start = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        body = text[match.end() : next_start].strip()
+        formatted_body = _format_section_body(body)
+        if formatted_body:
+            sections.append(f"## {title}\n{formatted_body}")
+        else:
+            sections.append(f"## {title}")
+
+    return "\n\n".join(sections)
+
+
 def render_answer(state: OrchestrationState) -> str:
     template = _load_template()
     mode = state.mode or state.intent or "info"
     summary = state.response_message or state.answer or "요청하신 정보를 정리했어요."
+    if mode == "info":
+        summary = _format_informational_summary(summary)
     calc_context = _build_calc_context(state)
     info_context = _build_info_context(state)
     context = {
