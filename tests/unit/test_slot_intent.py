@@ -56,3 +56,34 @@ def test_compound_korean_amount_parsed_correctly() -> None:
     slots = extract_intent_and_slots(message)["slots"]
 
     assert slots["collateral_value"] == 150_000_000
+
+
+def test_informational_definition_detected() -> None:
+    analysis = extract_intent_and_slots("청년주택담보대출이란")
+    assert analysis.get("intent") == "info"
+
+
+def test_informational_documents_question_detected() -> None:
+    analysis = extract_intent_and_slots("온라인으로 제출 가능한 서류가 있나요?")
+    assert analysis.get("intent") == "info"
+
+
+def test_informational_regex_variants_detected() -> None:
+    phrases = [
+        "필요 서류와 절차를 알려줘",
+        "자격 요건이 궁금합니다",
+        "상환 조건은 어떻게 되는지 설명",
+    ]
+    for phrase in phrases:
+        analysis = extract_intent_and_slots(phrase)
+        assert analysis.get("intent") == "info"
+
+
+def test_informational_without_numeric_slots_but_calc_keywords() -> None:
+    analysis = extract_intent_and_slots("LTV 정의 알려줘")
+    assert analysis.get("intent") == "info"
+
+
+def test_informational_impact_question_even_with_calc_keywords() -> None:
+    analysis = extract_intent_and_slots("금리 인상이 DSR에 영향이 있나요?")
+    assert analysis.get("intent") == "info"

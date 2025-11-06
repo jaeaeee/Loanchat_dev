@@ -48,10 +48,47 @@ _INFO_KEYWORDS = {
     "알려줘",
 }
 _QUESTION_TOKENS = {"?", "어떻게", "왜", "언제", "어디", "무엇"}
+INFO_PATTERNS = [
+    r"(가능(?:한가|할까|해)?)",
+    r"(무엇|뭔|뭐|정의|이란|란|뜻|의미)",
+    r"(방법|어떻게|절차|순서|흐름|하는\s*법|가이드)",
+    r"(설명|알려\s*줘|알고\s*싶|궁금)",
+    r"(요건|조건|자격|필요|필수|서류|준비물)",
+    r"(후순위|2\s*순위|담보\s*순위|영향|중복|신청)",
+]
+INFO_REGEX = re.compile("|".join(INFO_PATTERNS), re.IGNORECASE)
+_IMPACT_QUESTION_PATTERN = re.compile(r"영향\s*이\s*있(나요|을까요|어\?)\s*$", re.IGNORECASE)
+_CALC_SLOT_KEYS = {
+    "loan_amount",
+    "principal",
+    "remaining_principal",
+    "outstanding_principal",
+    "interest_rate",
+    "rate",
+    "months",
+    "term_months",
+    "fee_rate",
+    "annual_income",
+    "annual_debt_service",
+    "total_debt_payment",
+    "monthly_debt_payment",
+    "target_dsr",
+    "target_dti",
+    "collateral_value",
+    "property_value",
+}
 
 _INCOME_KEYWORDS = ("연소득", "연 봉", "연봉", "연간소득", "소득")
 _DEBT_KEYWORDS = ("부채", "상환")
-_COLLATERAL_KEYWORDS = ("집값", "주택가격", "주택 가격", "담보", "시세", "매매가", "아파트값")
+_COLLATERAL_KEYWORDS = (
+    "집값",
+    "주택가격",
+    "주택 가격",
+    "담보",
+    "시세",
+    "매매가",
+    "아파트값",
+)
 _LOAN_KEYWORDS = ("대출", "대출금", "대출액", "원금", "잔금", "대출잔액", "잔액")
 _MONTH_KEYWORDS = ("월", "매월", "월별")
 _RATE_INTEREST_KEYWORDS = ("금리", "이자", "연이율", "연 이자율")
@@ -148,6 +185,7 @@ def _normalize_amount_token(raw: str) -> Optional[int]:
         return None
     return int(round(total))
 
+
 _RATE_PATTERN = re.compile(r"(?P<rate>\d+(?:\.\d+)?)\s*%")
 _TERM_YEAR_PATTERN = re.compile(r"(?P<years>\d+)\s*년")
 _TERM_MONTH_PATTERN = re.compile(r"(?P<months>\d+)\s*개월?")
@@ -158,8 +196,7 @@ _AMOUNT_UNIT_CHARS = {"억", "만", "천", "백", "십", "원"}
 class LLMClient(Protocol):
     """LLM 보조 호출용 최소 인터페이스."""
 
-    def invoke(self, prompt: str, *, temperature: float = 0.0) -> str:
-        ...
+    def invoke(self, prompt: str, *, temperature: float = 0.0) -> str: ...
 
 
 @dataclass
@@ -192,18 +229,31 @@ def _rule_based_analysis(message: str) -> RuleAnalysis:
     has_number = bool(re.search(r"\d", message))
 
     calc_hits = sum(1 for kw in _CALC_KEYWORDS if kw in lowered)
-    info_hits = sum(1 for kw in _INFO_KEYWORDS if kw in lowered)
+    info_hits = sum(1 for _ in INFO_REGEX.finditer(message))
     question_hits = sum(1 for kw in _QUESTION_TOKENS if kw in lowered or kw in tokens)
     has_strong_calc_keyword = any(kw in lowered for kw in _STRONG_CALC_KEYWORDS)
 
     slots = _extract_slots(message)
 
+    has_calc_slots = any(key in slots for key in _CALC_SLOT_KEYS)
+    info_regex_hit = info_hits > 0
+    impact_question = _IMPACT_QUESTION_PATTERN.search(message) is not None
+
+    info_priority = False
+    if info_regex_hit and not has_calc_slots:
+        info_priority = True
+    if impact_question:
+        info_priority = True
+    if info_priority and info_hits == 0:
+        info_hits = 1
+
     calc_condition = False
-    if calc_hits and has_number:
-        calc_condition = True
-    elif calc_hits > info_hits:
-        if has_number or has_strong_calc_keyword or calc_hits >= 2:
+    if not info_priority:
+        if calc_hits and has_number:
             calc_condition = True
+        elif calc_hits > info_hits:
+            if has_number or has_strong_calc_keyword or calc_hits >= 2:
+                calc_condition = True
 
     if calc_condition:
         intent = "calc"
@@ -242,11 +292,11 @@ def _extract_slots(message: str) -> Dict[str, Any]:
 
     def _context_before(span: tuple[int, int], window: int = 12) -> str:
         start = max(0, span[0] - window)
-        return message[start:span[0]].lower()
+        return message[start : span[0]].lower()
 
     def _context_after(span: tuple[int, int], window: int = 12) -> str:
         end = min(len(message), span[1] + window)
-        return message[span[1]:end].lower()
+        return message[span[1] : end].lower()
 
     def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
         return any(keyword in text for keyword in keywords)
@@ -276,11 +326,16 @@ def _extract_slots(message: str) -> Dict[str, Any]:
             slots.setdefault("target_ltv", value)
             slots.setdefault("target_ltv_unit", "percent")
             continue
-        if _contains_any(before, _RATE_PREPAYMENT_KEYWORDS) or _contains_any(after, _RATE_PREPAYMENT_KEYWORDS):
+        if _contains_any(before, _RATE_PREPAYMENT_KEYWORDS) or _contains_any(
+            after, _RATE_PREPAYMENT_KEYWORDS
+        ):
             slots.setdefault("fee_rate", value)
             slots.setdefault("fee_rate_unit", "percent")
             continue
-        if not interest_assigned and (_contains_any(before, _RATE_INTEREST_KEYWORDS) or _contains_any(after, _RATE_INTEREST_KEYWORDS)):
+        if not interest_assigned and (
+            _contains_any(before, _RATE_INTEREST_KEYWORDS)
+            or _contains_any(after, _RATE_INTEREST_KEYWORDS)
+        ):
             slots["interest_rate"] = value
             slots.setdefault("interest_rate_unit", "percent")
             interest_assigned = True
@@ -324,9 +379,13 @@ def _extract_slots(message: str) -> Dict[str, Any]:
         normalized = _normalize_amount_token(token)
         if normalized is None:
             continue
-        context = (message[max(0, span[0] - 12): min(len(message), span[1] + 12)]).lower()
-        before_word = message[max(0, span[0] - 12): span[0]].strip().lower().split()
-        after_word = message[span[1] : min(len(message), span[1] + 12)].strip().lower().split()
+        context = (
+            message[max(0, span[0] - 12) : min(len(message), span[1] + 12)]
+        ).lower()
+        before_word = message[max(0, span[0] - 12) : span[0]].strip().lower().split()
+        after_word = (
+            message[span[1] : min(len(message), span[1] + 12)].strip().lower().split()
+        )
         prev_token = before_word[-1] if before_word else ""
         next_token = after_word[0] if after_word else ""
         assigned = False
@@ -390,7 +449,9 @@ def _extract_slots(message: str) -> Dict[str, Any]:
             else:
                 slots.setdefault("additional_amounts", []).append(normalized)
     if "additional_amounts" in slots:
-        slots["additional_amounts"] = sorted({int(value) for value in slots["additional_amounts"]}, reverse=True)
+        slots["additional_amounts"] = sorted(
+            {int(value) for value in slots["additional_amounts"]}, reverse=True
+        )
 
     return slots
 
@@ -433,7 +494,7 @@ def _build_llm_prompt(message: str, rule: RuleAnalysis) -> str:
         "당신은 금융 상담 챗봇의 라우터입니다.\n"
         "사용자 발화의 intent(calc/info)와 핵심 슬롯(loan_amount, interest_rate, term_months 등)을 JSON으로 추출하세요.\n"
         "가능하면 아래 규칙 기반 결과를 참고하되, 확신이 없으면 score를 0.5 이하로 설정합니다.\n"
-        "응답 예시: {\"intent\": \"calc\", \"slots\": {\"loan_amount\": 300000000}, \"confidence\": {\"score\": 0.82}}\n"
+        '응답 예시: {"intent": "calc", "slots": {"loan_amount": 300000000}, "confidence": {"score": 0.82}}\n'
         f"규칙 기반 intent: {rule.intent}\n"
         f"규칙 기반 confidence: {rule.confidence}\n"
         f"사용자 발화: {message}\n"
